@@ -58,15 +58,21 @@ with gr.Blocks(title="Paper Editor") as app:
 
 
 def main():
+    on_space = bool(os.getenv("SPACE_ID"))  # set by Hugging Face Spaces
     load_dotenv(ROOT / ".env")
     password = os.getenv("APP_PASSWORD")
     if not password:
+        if on_space:
+            sys.exit("APP_PASSWORD secret is missing; refusing to run without a password.")
         password = secrets.token_urlsafe(9)
         set_key(str(ROOT / ".env"), "APP_PASSWORD", password)
         print("Made a phone password and saved it in .env (APP_PASSWORD).")
-    # Port 7860 is already used by Stable Diffusion on this PC.
-    app.launch(server_name="0.0.0.0", server_port=7870, auth=("jacob", password),
-               share="--share" in sys.argv)
+    if on_space:
+        app.launch(auth=("jacob", password))
+    else:
+        # Port 7860 is already used by Stable Diffusion on this PC.
+        app.launch(server_name="0.0.0.0", server_port=7870, auth=("jacob", password),
+                   share="--share" in sys.argv)
 
 
 if __name__ == "__main__":

@@ -157,7 +157,7 @@ def ask_strokes(img, box, old, new):
         messages=[{"role": "user", "content": [
             {"type": "image", "source": {"type": "base64", "media_type": "image/png",
                                          "data": line_image(img, box)}},
-            {"type": "text", "text": PROMPT.format(old=old, new=new)},
+            {"type": "text", "text": PROMPT.format(old=old, new=new) + favorites_hint()},
         ]}],
     )
     if response.stop_reason == "refusal":
@@ -275,9 +275,47 @@ def load_page(src):
     return ctx
 
 
+def load_favorites():
+    """Hand-picked drawings (favorites.json): answer text -> strokes."""
+    f = Path(__file__).parent / "favorites.json"
+    return json.loads(f.read_text()) if f.exists() else {}
+
+
+def favorites_hint():
+    favs = load_favorites()
+    if not favs:
+        return ""
+    examples = "\n".join(f'"{k}": {json.dumps([[[round(x), round(y)] for x, y in s] for s in v])}'
+                         for k, v in favs.items())
+    return ("\n\nThese drawings, in the same coordinates, were judged to look most like this "
+            "writer. Draw any of these characters the same way:\n" + examples)
+
+
+def vary(strokes, rng):
+    """A favorite, redrawn slightly differently: small shifts, tilt and size change."""
+    angle = rng.normal(0, 0.03)
+    c, s = np.cos(angle), np.sin(angle)
+    scale = rng.normal(1, 0.03, 2)
+    out = []
+    for st in strokes:
+        st = np.array(st, np.float32)
+        st = (st - 50) @ np.array([[c, -s], [s, c]], np.float32).T * scale + 50
+        # Gentle bend along the stroke: random offsets at a few points, smoothly joined.
+        t = np.linspace(0, 1, len(st))
+        bend = np.stack([np.interp(t, np.linspace(0, 1, 4), rng.normal(0, 0.8, 4)) for _ in range(2)], 1)
+        out.append(st + rng.normal(0, 1.0, 2) + bend)
+    return out
+
+
 def get_strokes(ctx, p, redraw):
     if "strokes" in p and not redraw:
         return [np.array(s, np.float32) for s in p["strokes"]]
+    fav = load_favorites().get(p["correct_answer"].strip())
+    if fav:
+        strokes = vary(fav, np.random.default_rng())
+        p["strokes"] = [s.tolist() for s in strokes]
+        print(f"Writing '{p['correct_answer']}' from your favorite drawing")
+        return strokes
     strokes, notes = ask_strokes(ctx["original"], p["ink_box"], p["written_answer"], p["correct_answer"])
     p["strokes"] = [s.tolist() for s in strokes]
     print(f"Writing '{p['correct_answer']}' - style: {notes}")
