@@ -28,6 +28,9 @@ from grade import MODEL
 
 SS = 4  # supersampling factor for drawing; anti-aliases like a camera would
 
+# Rendering knobs. 1.0 = what was measured from the writer's own strokes.
+DEFAULT_STYLE = {"width": 1.0, "dark": 1.0, "wobble": 1.0, "grain": 1.0, "blur": 1.0}
+
 PROMPT = """The image shows one line of someone's handwriting, enlarged. The part
 marked by the red box is the wrong answer "{old}". It will be erased and replaced with
 "{new}", written by the same person.
@@ -185,7 +188,7 @@ def catmull_rom(pts, step):
     return np.vstack(out)
 
 
-def render(strokes, unit_px, pen_px, rng):
+def render(strokes, unit_px, pen_px, rng, style=DEFAULT_STYLE):
     """Draw strokes into a coverage map (0..1) at final resolution."""
     allp = np.vstack(strokes)
     margin = pen_px * 3
@@ -198,7 +201,7 @@ def render(strokes, unit_px, pen_px, rng):
         px = catmull_rom(s * unit_px, 0.25)
         seg = np.r_[0, np.cumsum(np.linalg.norm(np.diff(px, axis=0), axis=1))]
         t = seg / max(seg[-1], 1e-3)
-        px = px + hand_tremor(px, seg, pen_px, rng)
+        px = px + hand_tremor(px, seg, pen_px, rng) * style["wobble"]
         pressure = np.minimum(1, 0.75 + t / 0.12 * 0.25) * np.minimum(1, 0.85 + (1 - t) / 0.15 * 0.15)
         pressure = pressure * np.interp(t, np.linspace(0, 1, 6), rng.normal(1, 0.07, 6))
         pressure = pressure / pressure.mean()  # average pressure = the measured pen
@@ -217,7 +220,8 @@ def render(strokes, unit_px, pen_px, rng):
     # random power leaves solid centres alone but makes the soft edges ragged.
     fine = cv2.GaussianBlur(rng.normal(0, 1, canvas.shape).astype(np.float32), (0, 0), SS * 0.4)
     fine /= fine.std() + 1e-6
-    canvas = canvas ** np.clip(1 + 0.6 * fine, 0.4, 2.5) * np.clip(1 + 0.08 * fine, 0.8, 1.2)
+    g = style["grain"]
+    canvas = canvas ** np.clip(1 + 0.6 * g * fine, 0.4, 2.5) * np.clip(1 + 0.08 * g * fine, 0.8, 1.2)
     cov = cv2.resize(canvas, (w, h), interpolation=cv2.INTER_AREA)
     return np.clip(cov, 0, 1), int(round(ox)), int(round(margin))
 
@@ -255,53 +259,70 @@ def compare_strip(before, after, box, scale=4):
     return np.hstack([a, np.full((a.shape[0], 12, 3), 255, np.uint8), b])
 
 
+def load_page(src):
+    """Everything about the photo that every variant shares."""
+    out_dir = Path("out")
+    ctx = {"src": src, "out_dir": out_dir,
+           "graded": json.loads((out_dir / f"{src.stem}-graded.json").read_text()),
+           "original": cv2.imread(str(src), cv2.IMREAD_COLOR),
+           "erased": cv2.imread(str(out_dir / f"{src.stem}-erased.png"), cv2.IMREAD_COLOR)}
+    gray = cv2.cvtColor(ctx["original"], cv2.COLOR_BGR2GRAY)
+    bg = paper_background(gray)
+    strong, _ = ink_mask(gray, bg)
+    ctx.update(gray=gray, bg=bg, strong=strong, blur_sigma=edge_softness(gray, bg, strong),
+               orig_paper=cv2.merge([paper_background(ctx["original"][..., c]) for c in range(3)]),
+               page_paper=cv2.merge([paper_background(ctx["erased"][..., c]) for c in range(3)]))
+    return ctx
+
+
+def get_strokes(ctx, p, redraw):
+    if "strokes" in p and not redraw:
+        return [np.array(s, np.float32) for s in p["strokes"]]
+    strokes, notes = ask_strokes(ctx["original"], p["ink_box"], p["written_answer"], p["correct_answer"])
+    p["strokes"] = [s.tolist() for s in strokes]
+    print(f"Writing '{p['correct_answer']}' - style: {notes}")
+    return strokes
+
+
+def write_answer(ctx, page, p, strokes, rng, style=DEFAULT_STYLE):
+    """Draw one answer onto `page` (in place). Returns the measured pen settings."""
+    box = p["ink_box"]
+    x0, y0, x1, y1 = box
+    pen_px, gain = measure_pen(ctx["original"], ctx["gray"], ctx["bg"], ctx["strong"], box, ctx["blur_sigma"])
+    core = ink_colour(ctx["original"], ctx["strong"], box)
+    op = ctx["orig_paper"][y0:y1, x0:x1].reshape(-1, 3).astype(np.float32).mean(axis=0)
+    paper = ctx["page_paper"][y0:y1, x0:x1].reshape(-1, 3).astype(np.float32).mean(axis=0)
+    # The pen darkens paper by (op - core) as seen through the blur; the real
+    # graphite is darker by `gain`. Apply that darkening to the paper here now.
+    darken = (op - core) * gain * style["dark"] * paper / np.maximum(op, 1)
+    ink = np.clip(paper - darken, 0, 255)
+
+    # Start the new answer where the old ink started, so spacing after "=" is kept.
+    left = min(st[:, 0].min() for st in strokes)
+    strokes = [st - [left, 0] for st in strokes]
+    cov, ox, oy = render(strokes, (y1 - y0) / 100, pen_px * style["width"], rng, style)
+    blend(page, cov, (x0 - ox, y0 - oy), ink, paper, ctx["blur_sigma"] * style["blur"])
+    return pen_px, gain
+
+
 def main():
     args = [a for a in sys.argv[1:] if a != "--redraw"]
     redraw = "--redraw" in sys.argv
     if len(args) != 1:
         sys.exit("Usage: python write.py <photo> [--redraw]")
     load_dotenv()
-    src = Path(args[0])
-    out_dir = Path("out")
-    graded = json.loads((out_dir / f"{src.stem}-graded.json").read_text())
-
-    original = cv2.imread(str(src), cv2.IMREAD_COLOR)
-    page = cv2.imread(str(out_dir / f"{src.stem}-erased.png"), cv2.IMREAD_COLOR)
-    gray = cv2.cvtColor(original, cv2.COLOR_BGR2GRAY)
-    bg = paper_background(gray)
-    strong, _ = ink_mask(gray, bg)
-    blur_sigma = edge_softness(gray, bg, strong)
+    ctx = load_page(Path(args[0]))
+    src, out_dir, graded = ctx["src"], ctx["out_dir"], ctx["graded"]
+    page = ctx["erased"].copy()
     rng = np.random.default_rng(1)
 
     strips = []
     for p in graded["to_fix"]:
         if "ink_box" not in p:
             continue
-        box = p["ink_box"]
-        pen_px, gain = measure_pen(original, gray, bg, strong, box, blur_sigma)
-        core = ink_colour(original, strong, box)
-        x0, y0, x1, y1 = box
-        orig_paper = cv2.merge([paper_background(original[..., c]) for c in range(3)])
-        page_paper = cv2.merge([paper_background(page[..., c]) for c in range(3)])
-        op = orig_paper[y0:y1, x0:x1].reshape(-1, 3).astype(np.float32).mean(axis=0)
-        paper = page_paper[y0:y1, x0:x1].reshape(-1, 3).astype(np.float32).mean(axis=0)
-        # The pen darkens paper by (op - core) as seen through the blur; the real
-        # graphite is darker by `gain`. Apply that darkening to the paper here now.
-        ink = np.clip(paper - (op - core) * gain * paper / np.maximum(op, 1), 0, 255)
-
-        if "strokes" in p and not redraw:
-            strokes = [np.array(s, np.float32) for s in p["strokes"]]
-        else:
-            strokes, notes = ask_strokes(original, box, p["written_answer"], p["correct_answer"])
-            p["strokes"] = [s.tolist() for s in strokes]
-            print(f"Writing '{p['correct_answer']}' - style: {notes}")
-        # Start the new answer where the old ink started, so spacing after "=" is kept.
-        left = min(st[:, 0].min() for st in strokes)
-        strokes = [st - [left, 0] for st in strokes]
-        cov, ox, oy = render(strokes, (y1 - y0) / 100, pen_px, rng)
-        blend(page, cov, (x0 - ox, y0 - oy), ink, paper, blur_sigma)
-        strips.append(compare_strip(original, page, box))
-        print(f"  pen width {pen_px:.2f}px, darkness x{gain:.2f}, blur {blur_sigma:.2f}")
+        pen_px, gain = write_answer(ctx, page, p, get_strokes(ctx, p, redraw), rng)
+        strips.append(compare_strip(ctx["original"], page, p["ink_box"]))
+        print(f"  pen width {pen_px:.2f}px, darkness x{gain:.2f}, blur {ctx['blur_sigma']:.2f}")
     (out_dir / f"{src.stem}-graded.json").write_text(json.dumps(graded, indent=2))
 
     cv2.imwrite(str(out_dir / f"{src.stem}-corrected.png"), page)

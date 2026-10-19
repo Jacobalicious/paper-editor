@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Paper Editor Variants</title>
+<style>
+:root { --bg:#f6f4ef; --fg:#1d1c1a; --muted:#6b675f; --card:#fff; --line:#e3dfd6; --accent:#b4471f; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg:#161514; --fg:#ecebe7; --muted:#9b978e; --card:#22201e; --line:#34312d; --accent:#e0794f; }
+}
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 system-ui, sans-serif; }
+header, section { max-width:1200px; margin:0 auto; padding:16px; }
+h1 { margin:16px 0 4px; font-size:22px; }
+header p { margin:0; color:var(--muted); }
+h2 { font-size:16px; margin:24px 0 12px; }
+h2 span { font-weight:400; color:var(--muted); margin-left:8px; }
+.grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(260px, 1fr)); gap:12px; }
+.card { margin:0; background:var(--card); border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+.card.ref { border-color:var(--accent); }
+.card img { display:block; width:100%; height:auto; }
+figcaption { padding:8px 10px; font-size:14px; color:var(--muted); }
+figcaption b { color:var(--fg); margin-right:4px; }
+.ref figcaption b { color:var(--accent); }
+</style></head><body>
+<header><h1>Paper editor: variants</h1>
+<p>Each card is a close-up of one version of the corrected answer. The orange card is the real, untouched photo for comparison. Click any card for the full page. Tell Claude the number of your favourite.</p></header>
+<section>
+<h2>Round Oct 19, 15:59 <span>example-2plus2.png &middot; 5 -&gt; 4</span></h2>
+<div class="grid"><figure class="card ref">
+  <a href="rounds/2026-10-19_155950/original.jpg"><img src="rounds/2026-10-19_155950/original-zoom.jpg" alt="Original"></a>
+  <figcaption><b>Real</b> original photo</figcaption></figure><figure class="card" id="2026-10-19_155950-1">
+  <a href="rounds/2026-10-19_155950/v01.jpg"><img loading="lazy" src="rounds/2026-10-19_155950/v01-zoom.jpg" alt="Variant 1"></a>
+  <figcaption><b>#1</b> sketch 1 &middot; as measured</figcaption></figure><figure class="card" id="2026-10-19_155950-2">
+  <a href="rounds/2026-10-19_155950/v02.jpg"><img loading="lazy" src="rounds/2026-10-19_155950/v02-zoom.jpg" alt="Variant 2"></a>
+  <figcaption><b>#2</b> sketch 1 &middot; thinner + darker</figcaption></figure><figure class="card" id="2026-10-19_155950-3">
+  <a href="rounds/2026-10-19_155950/v03.jpg"><img loading="lazy" src="rounds/2026-10-19_155950/v03-zoom.jpg" alt="Variant 3"></a>
+  <figcaption><b>#3</b> sketch 1 &middot; rougher</figcaption></figure><figure class="card" id="2026-10-19_155950-4">
+  <a href="rounds/2026-10-19_155950/v04.jpg"><img loading="lazy" src="rounds/2026-10-19_155950/v04-zoom.jpg" alt="Variant 4"></a>
+  <figcaption><b>#4</b> sketch 2 &middot; as measured</figcaption></figure><figure class="card" id="2026-10-19_155950-5">
+  <a href="rounds/2026-10-19_155950/v05.jpg"><img loading="lazy" src="rounds/2026-10-19_155950/v05-zoom.jpg" alt="Variant 5"></a>
+  <figcaption><b>#5</b> sketch 2 &middot; thinner + darker</figcaption></figure><figure class="card" id="2026-10-19_155950-6">
+  <a href="rounds/2026-10-19_155950/v06.jpg"><img loading="lazy" src="rounds/2026-10-19_155950/v06-zoom.jpg" alt="Variant 6"></a>
+  <figcaption><b>#6</b> sketch 2 &middot; rougher</figcaption></figure><figure class="card" id="2026-10-19_155950-7">
+  <a href="rounds/2026-10-19_155950/v07.jpg"><img loading="lazy" src="rounds/2026-10-19_155950/v07-zoom.jpg" alt="Variant 7"></a>
+  <figcaption><b>#7</b> sketch 3 &middot; as measured</figcaption></figure><figure class="card" id="2026-10-19_155950-8">
+  <a href="rounds/2026-10-19_155950/v08.jpg"><img loading="lazy" src="rounds/2026-10-19_155950/v08-zoom.jpg" alt="Variant 8"></a>
+  <figcaption><b>#8</b> sketch 3 &middot; thinner + darker</figcaption></figure><figure class="card" id="2026-10-19_155950-9">
+  <a href="rounds/2026-10-19_155950/v09.jpg"><img loading="lazy" src="rounds/2026-10-19_155950/v09-zoom.jpg" alt="Variant 9"></a>
+  <figcaption><b>#9</b> sketch 3 &middot; rougher</figcaption></figure><figure class="card" id="2026-10-19_155950-10">
+  <a href="rounds/2026-10-19_155950/v10.jpg"><img loading="lazy" src="rounds/2026-10-19_155950/v10-zoom.jpg" alt="Variant 10"></a>
+  <figcaption><b>#10</b> sketch 4 &middot; as measured</figcaption></figure><figure class="card" id="2026-10-19_155950-11">
+  <a href="rounds/2026-10-19_155950/v11.jpg"><img loading="lazy" src="rounds/2026-10-19_155950/v11-zoom.jpg" alt="Variant 11"></a>
+  <figcaption><b>#11</b> sketch 4 &middot; thinner + darker</figcaption></figure><figure class="card" id="2026-10-19_155950-12">
+  <a href="rounds/2026-10-19_155950/v12.jpg"><img loading="lazy" src="rounds/2026-10-19_155950/v12-zoom.jpg" alt="Variant 12"></a>
+  <figcaption><b>#12</b> sketch 4 &middot; rougher</figcaption></figure></div></section>
+</body></html>
