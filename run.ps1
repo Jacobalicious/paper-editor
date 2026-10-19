@@ -1,4 +1,4 @@
-# Grade a photo. Usage:  .\grade.ps1 samples\example-2plus2.png
+# Run the whole pipeline on a photo. Usage:  .\run.ps1 samples\example-2plus2.png
 param([string]$Photo = "samples\example-2plus2.png")
 Set-Location $PSScriptRoot
 if (-not (Test-Path ".env")) {
@@ -7,4 +7,7 @@ if (-not (Test-Path ".env")) {
     notepad ".env"
     return
 }
-& ".\.venv\Scripts\python.exe" grade.py $Photo
+$py = ".\.venv\Scripts\python.exe"
+& $py grade.py $Photo
+if ($LASTEXITCODE -ne 0) { return }
+& $py erase.py $Photo

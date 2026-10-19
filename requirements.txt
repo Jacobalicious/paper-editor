@@ -2,3 +2,5 @@ anthropic
 pillow
 sympy
 python-dotenv
+opencv-python-headless
+numpy
