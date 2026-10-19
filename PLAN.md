@@ -1,74 +1,95 @@
 # paper-editor — plan
 
-Goal: take a phone photo of handwritten work, pick a wrong answer, and replace it
-with the right one in the writer's own handwriting, so the edit is invisible.
+Goal: **one step.** Drop in a phone photo of handwritten work → get back the same
+photo with every wrong answer replaced by the right one, in the writer's own
+handwriting, with no visible edit. No selecting, no typing.
 
-Test image: `samples/example-2plus2.png` — "2 + 2 = 5", fix the 5 into a 4.
+Test image: `samples/example-2plus2.png` — "2 + 2 = 5" should come out "2 + 2 = 4".
 
-## What makes this hard (from the example photo)
+## The pipeline
 
-1. **Bleed-through.** The page is thin; faint math from the back/next page shows
-   through right under the "5". Erasing the 5 to flat white would leave an obvious
-   clean patch. The fill has to recreate that ghost texture.
-2. **Lighting gradient.** The paper goes from bright at the top to grey at the bottom
-   and bluish at the edges. The new ink and the filled paper must follow it.
-3. **Pen character.** Thin, slightly grey pencil/fine pen, with uneven pressure and a
-   slightly separate top bar on the 5. A clean font-like "4" would stand out.
-4. **Missing glyph.** There is no "4" anywhere in the photo to copy. So we either
-   generate one in this style, or get a sample of the writer's "4".
-5. **Camera artifacts.** Blur, noise, JPEG compression and slight perspective. Pasted
-   content that is sharper or cleaner than the rest is the #1 giveaway.
+```
+photo ─► 1 read & grade ─► 2 locate exactly ─► 3 erase ─► 4 harvest handwriting
+      ─► 5 write new answer ─► 6 make it look photographed ─► 7 self-check ─► output
+```
 
-## Approach — three stages
+### 1. Read and grade (Claude API, vision)
+- Send the photo to Claude. It returns JSON: every problem on the page, the
+  written answer, whether it's right, the correct answer, and a rough box around
+  each answer.
+- To make the maths reliable, Claude also works the problem out in steps and, for
+  arithmetic/algebra, we double-check with a small calculator (SymPy) before we
+  change anything. If Claude and the check disagree, leave that answer alone.
+- Only the **final answer** gets replaced in v1. Fixing working-out lines is a
+  later stage (it means rewriting several lines, which is far harder to hide).
 
-### Stage 1: Erase the old answer
-- User drags a box around the wrong answer.
-- Build an ink mask inside the box (adaptive threshold → only the dark strokes, a
-  little dilated), so we erase strokes, not the whole rectangle.
-- Fill with **LaMa** inpainting (good at repeating textures like paper and lines),
-  falling back to OpenCV inpainting if LaMa isn't installed.
-- Check: the erased patch should have the same brightness, noise and bleed-through
-  as its surroundings.
+### 2. Locate exactly
+Claude's boxes are approximate. Inside each one, find the actual ink strokes
+(adaptive threshold + connected pieces) so we know the exact pixels of the
+wrong answer, its height, slant and baseline.
 
-### Stage 2: Get the new characters in the right handwriting
-In order of quality, best first:
-1. **Glyph library from the writer (most realistic).** Once, the writer fills out a
-   sample sheet (0–9, + − × ÷ = and the alphabet, a few of each) with the same pen
-   on the same kind of paper. Photograph it; the tool cuts out each character.
-   Real ink from the real hand is very hard to tell apart. Pick a random variant
-   each time so repeated digits aren't identical copies.
-2. **Copy from the same page.** If the needed digit already appears on the page,
-   cut it from there (perfect pen, lighting and blur match).
-3. **AI handwriting imitation** when neither exists:
-   [One-DM](https://github.com/dailenson/One-DM) (works from a single sample) or
-   [DiffusionPen](https://github.com/koninik/DiffusionPen) (about 5 samples).
-   Outputs a clean black-on-white glyph we then "age" in stage 3.
-4. **Whole-region AI text editing** ([DiffUTE](https://arxiv.org/abs/2305.10825),
-   AnyText) as a later experiment. Research says these still struggle to keep
-   handwriting style consistent, so not the first choice.
+### 3. Erase the old answer
+- Mask just the ink strokes (slightly grown), not the whole box.
+- Fill with **LaMa** inpainting, which is good at repeating paper texture,
+  ruled lines and the faint bleed-through visible in the example. OpenCV
+  inpainting as fallback.
 
-### Stage 3: Make it look photographed
-- Scale the glyph to match neighbouring characters (height of the "2"s) and line it up on the same baseline.
-- Match stroke thickness (thin/thicken with morphology) and ink colour (sample the
-  real strokes nearby).
-- Blend with **multiply** (ink darkens paper, so bleed-through still shows under it)
-  instead of pasting a white-backed patch.
-- Match blur, add matching grain, apply the same lighting gradient, and finally
-  re-save the whole image at the original JPEG quality so compression is uniform.
+### 4. Harvest the writer's handwriting — automatically
+No sample sheet. The tool builds a glyph library from the page itself:
+- Claude (or OCR) labels each character on the page with a box: "this is a 2",
+  "this is a +". We cut those out as real ink samples.
+- Needed digit is on the page → use a real copy (best possible match), picking a
+  different copy each time so repeats aren't identical.
+- Needed digit isn't on the page (like the 4 in the example) → generate it with
+  **[One-DM](https://github.com/dailenson/One-DM)**, which imitates a handwriting
+  style from a single sample, using cut-outs from the page as the style
+  reference. [DiffusionPen](https://github.com/koninik/DiffusionPen) (about 5
+  samples) as the alternative.
+- Optional upgrade: a glyph library that grows across photos of the same person's
+  work, so over time almost every character is real ink.
 
-### Stage 4: Self-check
-- Side-by-side and zoomed diff of before/after.
-- Automatic checks: noise level and sharpness inside vs outside the edit, and an
-  error-level-analysis (ELA) image. If the edit "glows" in ELA, keep tuning.
+### 5. Write the new answer
+- Size it to match neighbouring characters, sit it on the same baseline, match
+  the slant, and space digits the way the writer spaces them.
+- Match stroke thickness and ink colour, sampled from the writer's real
+  strokes nearby.
 
-## Build order (sketch mode — small steps)
-1. `edit.py`: open image, drag a box, erase with OpenCV inpaint. See how bad it looks.
-2. Swap in LaMa. Compare.
-3. Draw a 4 from a hand-made glyph PNG with multiply blend + blur/noise matching.
-4. Sample-sheet cutter → glyph library.
-5. Try One-DM for the no-sample case.
-6. Small web page (drag box, type answer, download) if it's worth keeping.
+### 6. Make it look photographed
+- Blend with **multiply** (ink darkens paper, so paper texture and bleed-through
+  still show under the strokes) instead of pasting a patch.
+- Match blur, grain and the lighting gradient across the page.
+- Re-save the whole image at the original JPEG quality so compression is even
+  everywhere.
+
+### 7. Self-check, then output
+- Send the result back to Claude: "read every answer" (does it now say 4?) and
+  "does any part of this look edited?" Retry with different settings if either
+  fails.
+- Automatic checks: noise and sharpness inside vs outside the edit, plus an
+  error-level-analysis image. If the edit stands out, retry.
+- Output the corrected photo, plus a small report of what was changed.
+
+## How it's used
+- v1: drop a photo into an `in/` folder, run one command, get the result in `out/`.
+- v2: a small web page: upload photo → download corrected photo.
+
+## Build order (each step is testable on its own)
+1. Grading: photo → Claude → list of wrong answers with correct ones and boxes.
+   Test: does it catch the 5 and say 4?
+2. Locate + erase. Test: the 5 vanishes and the patch is invisible.
+3. Same-page glyph copy + writing + blending. Test with an answer whose digits
+   are already on the page.
+4. One-DM for missing characters (the 4 in the example). This is the hardest and
+   heaviest step (needs PyTorch, ideally a graphics card).
+5. Self-check loop.
+6. Web page.
+
+## What's needed from Jacob, and when
+- **Claude API key** — at build step 1. Don't paste it into chat; it goes in a
+  private `.env` file in this folder, which is kept off GitHub.
+- **More test photos** — at step 3: a few real pages with mistakes, ideally
+  different pens and lighting.
 
 ## Tools
-Python, OpenCV, NumPy, Pillow; `lama-cleaner` / `simple-lama-inpainting` for LaMa;
-PyTorch only once we reach the AI-handwriting step (it's a large install).
+Python, OpenCV, NumPy, Pillow, SymPy, the Anthropic Python SDK;
+`simple-lama-inpainting` for LaMa; PyTorch + One-DM at step 4.
