@@ -13,6 +13,7 @@ Saves out/<name>-corrected.png and out/<name>-compare.png (zoomed before/after).
 
 import base64
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -20,12 +21,12 @@ import anthropic
 import cv2
 import numpy as np
 from dotenv import load_dotenv
+from skimage.morphology import skeletonize
 
 from erase import ink_mask, paper_background
 from grade import MODEL
 
 SS = 4  # supersampling factor for drawing; anti-aliases like a camera would
-PEN_SCALE = 0.85  # measured width includes blurred edges; the pen itself is a bit thinner
 
 PROMPT = """The image shows one line of someone's handwriting, enlarged. The part
 marked by the red box is the wrong answer "{old}". It will be erased and replaced with
@@ -69,20 +70,47 @@ SCHEMA = {
 
 # ---------- measuring the writer's pen ----------
 
-def measure_pen(img, strong, box):
-    """Stroke width (px) and core ink colour of the old answer."""
-    x0, y0, x1, y1 = box
-    m = strong[y0:y1, x0:x1]
-    dt = cv2.distanceTransform(m, cv2.DIST_L2, 3)
-    ridge = (dt > 0) & (dt >= cv2.dilate(dt, np.ones((3, 3), np.uint8)))
-    width = float(2 * np.median(dt[ridge])) if ridge.any() else 2.0
+def measure_pen(img, gray, bg, strong, box, sigma):
+    """Work out the real pen: its width (px) and true darkness.
 
+    In the photo a thin stroke is smeared by blur, so it looks wider and lighter
+    than the pencil line really is. We measure two things the blur can't change
+    much - total ink per pixel of stroke length, and the darkest point across a
+    stroke - and solve for the width and darkness that, once blurred, give both.
+    Returns (width_px, darkness_gain) where gain scales the observed peak darkness
+    up to the true pencil darkness.
+    """
+    x0, y0, x1, y1 = box
+    m = strong[y0:y1, x0:x1] > 0
+    skel = skeletonize(m)
+    length = max(skel.sum() * 1.08, 1)  # diagonal steps are longer than 1px
+    diff = cv2.subtract(bg, gray)[y0:y1, x0:x1].astype(np.float32)
+    near = cv2.dilate(m.astype(np.uint8), np.ones((5, 5), np.uint8)) > 0
+    mass = diff[near].sum() / length          # ink per pixel of length
+    peak = np.percentile(diff[skel], 75)      # observed darkness at stroke centres
+
+    k = 2 * math.sqrt(2) * max(sigma, 1e-3)
+    def seen_peak(w):
+        return mass / w * math.erf(w / k)
+    lo, hi = 0.5, 12.0
+    if seen_peak(lo) < peak:                  # sharper than our blur estimate
+        width = mass / peak
+    else:
+        for _ in range(40):
+            mid = (lo + hi) / 2
+            lo, hi = (mid, hi) if seen_peak(mid) > peak else (lo, mid)
+        width = (lo + hi) / 2
+    gain = (mass / width) / peak
+    return float(width), float(gain)
+
+
+def ink_colour(img, strong, box):
+    """Colour of the darkest part of the old strokes."""
+    x0, y0, x1, y1 = box
     crop = img[y0:y1, x0:x1].reshape(-1, 3).astype(np.float32)
-    g = crop.mean(axis=1)
-    inked = m.reshape(-1) > 0
-    darkest = g[inked] <= np.percentile(g[inked], 10)
-    core = crop[inked][darkest].mean(axis=0)
-    return width, core
+    inked = strong[y0:y1, x0:x1].reshape(-1) > 0
+    g = crop[inked].mean(axis=1)
+    return crop[inked][g <= np.percentile(g, 15)].mean(axis=0)
 
 
 def edge_softness(gray, bg, strong):
@@ -170,8 +198,10 @@ def render(strokes, unit_px, pen_px, rng):
         px = catmull_rom(s * unit_px, 0.25)
         seg = np.r_[0, np.cumsum(np.linalg.norm(np.diff(px, axis=0), axis=1))]
         t = seg / max(seg[-1], 1e-3)
-        pressure = np.minimum(1, 0.7 + t / 0.12 * 0.3) * np.minimum(1, 0.8 + (1 - t) / 0.15 * 0.2)
-        pressure = pressure * np.interp(t, np.linspace(0, 1, 6), rng.normal(1, 0.08, 6))
+        px = px + hand_tremor(px, seg, pen_px, rng)
+        pressure = np.minimum(1, 0.75 + t / 0.12 * 0.25) * np.minimum(1, 0.85 + (1 - t) / 0.15 * 0.15)
+        pressure = pressure * np.interp(t, np.linspace(0, 1, 6), rng.normal(1, 0.07, 6))
+        pressure = pressure / pressure.mean()  # average pressure = the measured pen
         for (x, y), pr in zip(px, pressure):
             r = max(1, int(round(pen_px / 2 * pr * SS)))
             c = (int((x + ox) * SS), int((y + margin) * SS))
@@ -182,18 +212,31 @@ def render(strokes, unit_px, pen_px, rng):
             cv2.circle(stamp, (c[0] - max(0, c[0] - r - 1), c[1] - max(0, c[1] - r - 1)),
                        r, float(pr), -1, cv2.LINE_AA)
             np.maximum(layer, stamp, out=layer)
+    canvas = np.clip(canvas, 0, 1)
+    # Graphite grain: paper fibres catch the lead unevenly. Raising coverage to a
+    # random power leaves solid centres alone but makes the soft edges ragged.
+    fine = cv2.GaussianBlur(rng.normal(0, 1, canvas.shape).astype(np.float32), (0, 0), SS * 0.4)
+    fine /= fine.std() + 1e-6
+    canvas = canvas ** np.clip(1 + 0.6 * fine, 0.4, 2.5) * np.clip(1 + 0.08 * fine, 0.8, 1.2)
     cov = cv2.resize(canvas, (w, h), interpolation=cv2.INTER_AREA)
-    grain = cv2.GaussianBlur(rng.normal(0, 1, cov.shape).astype(np.float32), (0, 0), 0.8)
-    cov = cov * np.clip(1 + 0.25 * grain, 0.5, 1.3)
     return np.clip(cov, 0, 1), int(round(ox)), int(round(margin))
+
+
+def hand_tremor(px, seg, pen_px, rng):
+    """Small sideways wobble along a stroke - hands never draw perfectly straight."""
+    if len(px) < 3:
+        return np.zeros_like(px)
+    d = np.gradient(px, axis=0)
+    normal = np.stack([-d[:, 1], d[:, 0]], 1) / (np.linalg.norm(d, axis=1, keepdims=True) + 1e-6)
+    off = np.zeros(len(px))
+    for period, amp in ((40, 0.45), (14, 0.25), (6, 0.12)):
+        off += amp * np.sin(2 * np.pi * seg / period + rng.uniform(0, 2 * np.pi))
+    return normal * (off * max(pen_px / 2.8, 0.6))[:, None]
 
 
 def blend(page, cov, top_left, core, paper, blur_sigma):
     """Multiply-blend ink onto the page: paper texture keeps showing through."""
-    peak = np.percentile(cov[cov > 0.05], 90) if (cov > 0.05).any() else 1
     cov = cv2.GaussianBlur(cov, (0, 0), blur_sigma)
-    # Blur spreads thin strokes out and lightens them; restore the centre darkness.
-    cov = np.clip(cov * peak / max(np.percentile(cov[cov > 0.05], 90), 1e-3), 0, 1)
     x, y = top_left
     h, w = cov.shape
     region = page[y:y + h, x:x + w].astype(np.float32)
@@ -235,13 +278,16 @@ def main():
         if "ink_box" not in p:
             continue
         box = p["ink_box"]
-        pen_px, core = measure_pen(original, strong, box)
+        pen_px, gain = measure_pen(original, gray, bg, strong, box, blur_sigma)
+        core = ink_colour(original, strong, box)
         x0, y0, x1, y1 = box
         orig_paper = cv2.merge([paper_background(original[..., c]) for c in range(3)])
         page_paper = cv2.merge([paper_background(page[..., c]) for c in range(3)])
         op = orig_paper[y0:y1, x0:x1].reshape(-1, 3).astype(np.float32).mean(axis=0)
         paper = page_paper[y0:y1, x0:x1].reshape(-1, 3).astype(np.float32).mean(axis=0)
-        ink = core / np.maximum(op, 1) * paper  # same darkening as the real pen
+        # The pen darkens paper by (op - core) as seen through the blur; the real
+        # graphite is darker by `gain`. Apply that darkening to the paper here now.
+        ink = np.clip(paper - (op - core) * gain * paper / np.maximum(op, 1), 0, 255)
 
         if "strokes" in p and not redraw:
             strokes = [np.array(s, np.float32) for s in p["strokes"]]
@@ -252,10 +298,10 @@ def main():
         # Start the new answer where the old ink started, so spacing after "=" is kept.
         left = min(st[:, 0].min() for st in strokes)
         strokes = [st - [left, 0] for st in strokes]
-        cov, ox, oy = render(strokes, (y1 - y0) / 100, pen_px * PEN_SCALE, rng)
+        cov, ox, oy = render(strokes, (y1 - y0) / 100, pen_px, rng)
         blend(page, cov, (x0 - ox, y0 - oy), ink, paper, blur_sigma)
         strips.append(compare_strip(original, page, box))
-        print(f"  pen width {pen_px:.1f}px, blur {blur_sigma:.2f}")
+        print(f"  pen width {pen_px:.2f}px, darkness x{gain:.2f}, blur {blur_sigma:.2f}")
     (out_dir / f"{src.stem}-graded.json").write_text(json.dumps(graded, indent=2))
 
     cv2.imwrite(str(out_dir / f"{src.stem}-corrected.png"), page)
