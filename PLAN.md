@@ -90,6 +90,13 @@ No sample sheet. The tool builds a glyph library from the page itself:
 - **More test photos** — at step 3: a few real pages with mistakes, ideally
   different pens and lighting.
 
+## Decision log
+- 2026-10-19: One-DM shelved for now. This PC's GTX 750 Ti is too old for current
+  PyTorch, and One-DM targets Linux + multi-GPU + Python 3.8. Instead Claude sketches
+  the new answer as pen strokes after studying the writer's line, and write.py renders
+  them with the measured pen width, darkness, grain and blur. First result on the
+  example is convincing at normal size.
+
 ## Tools
 Python, OpenCV, NumPy, Pillow, SymPy, the Anthropic Python SDK;
 `simple-lama-inpainting` for LaMa; PyTorch + One-DM at step 4.

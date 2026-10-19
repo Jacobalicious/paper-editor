@@ -11,3 +11,5 @@ $py = ".\.venv\Scripts\python.exe"
 & $py grade.py $Photo
 if ($LASTEXITCODE -ne 0) { return }
 & $py erase.py $Photo
+if ($LASTEXITCODE -ne 0) { return }
+& $py write.py $Photo --redraw
