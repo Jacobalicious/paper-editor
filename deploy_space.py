@@ -17,7 +17,7 @@ from dotenv import dotenv_values
 from huggingface_hub import HfApi
 
 ROOT = Path(__file__).parent
-SPACE = "sushiwushicat/paper-editor"
+SPACE = "SushiWushiCat/paper-editor"
 FILES = ["app.py", "grade.py", "erase.py", "write.py", "favorites.json"]
 REQUIREMENTS = """anthropic
 opencv-python-headless
@@ -25,7 +25,6 @@ numpy
 pillow
 sympy
 python-dotenv
-scikit-image
 """
 README = f"""---
 title: Paper Editor

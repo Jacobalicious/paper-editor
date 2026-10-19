@@ -1,0 +1,15 @@
+# Render setup for the phone app (free plan). Secrets are typed into Render, never stored here.
+services:
+  - type: web
+    name: paper-editor
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements-server.txt
+    startCommand: python app.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: APP_PASSWORD
+        sync: false

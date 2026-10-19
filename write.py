@@ -21,7 +21,6 @@ import anthropic
 import cv2
 import numpy as np
 from dotenv import load_dotenv
-from skimage.morphology import skeletonize
 
 from erase import ink_mask, paper_background
 from grade import MODEL
@@ -84,13 +83,17 @@ def measure_pen(img, gray, bg, strong, box, sigma):
     up to the true pencil darkness.
     """
     x0, y0, x1, y1 = box
-    m = strong[y0:y1, x0:x1] > 0
-    skel = skeletonize(m)
-    length = max(skel.sum() * 1.08, 1)  # diagonal steps are longer than 1px
+    m = strong[y0:y1, x0:x1]
+    # A thin stroke's outline goes up one side and back down the other, so the
+    # stroke length is about half the total outline length.
+    contours, _ = cv2.findContours(m, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
+    length = max(sum(cv2.arcLength(c, True) for c in contours) / 2, 1)
+    dt = cv2.distanceTransform(m, cv2.DIST_L2, 3)
+    centre = (dt > 0) & (dt >= cv2.dilate(dt, np.ones((3, 3), np.uint8)))
     diff = cv2.subtract(bg, gray)[y0:y1, x0:x1].astype(np.float32)
-    near = cv2.dilate(m.astype(np.uint8), np.ones((5, 5), np.uint8)) > 0
+    near = cv2.dilate(m, np.ones((5, 5), np.uint8)) > 0
     mass = diff[near].sum() / length          # ink per pixel of length
-    peak = np.percentile(diff[skel], 75)      # observed darkness at stroke centres
+    peak = np.percentile(diff[centre], 75)    # observed darkness at stroke centres
 
     k = 2 * math.sqrt(2) * max(sigma, 1e-3)
     def seen_peak(w):

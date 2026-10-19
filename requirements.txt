@@ -4,5 +4,4 @@ sympy
 python-dotenv
 opencv-python-headless
 numpy
-scikit-image
 gradio
