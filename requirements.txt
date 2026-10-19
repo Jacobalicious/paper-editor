@@ -1,0 +1,4 @@
+anthropic
+pillow
+sympy
+python-dotenv
