@@ -1,0 +1,18 @@
+# Keeps the phone app running on the tower (installed by tower/setup.sh).
+# Listens only on the tower's Tailscale address, so only Jacob's devices can reach it.
+[Unit]
+Description=Paper editor phone app
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/paper-editor
+Environment=HOST=100.116.186.113
+Environment=PORT=7870
+ExecStart=%h/paper-editor/.venv/bin/python app.py
+# Also covers Tailscale not being up yet right after a reboot.
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

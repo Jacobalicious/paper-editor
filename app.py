@@ -4,7 +4,8 @@ Usage:  python app.py            (only on this PC's Wi-Fi network)
         python app.py --share    (also a temporary link that works anywhere)
 
 Password-protected with APP_PASSWORD from .env (user name: jacob), so nobody else
-can spend the Claude credits.
+can spend the Claude credits. The one exception is HOST set to a Tailscale address
+(100.x.x.x, as on the tower): only Jacob's own devices can reach that, so no login.
 """
 
 import os
@@ -79,19 +80,20 @@ with gr.Blocks(title="Paper Editor") as app:
 def main():
     hosted = bool(os.getenv("RENDER") or os.getenv("SPACE_ID"))  # set by Render / HF Spaces
     load_dotenv(ROOT / ".env")
-    password = os.getenv("APP_PASSWORD")
-    if not password:
-        if hosted:
-            sys.exit("APP_PASSWORD is missing; refusing to run without a password.")
-        password = secrets.token_urlsafe(9)
-        set_key(str(ROOT / ".env"), "APP_PASSWORD", password)
-        print("Made a phone password and saved it in .env (APP_PASSWORD).")
-    page = {"auth": ("jacob", password), "head": REAR_CAMERA_JS, "css": CSS, "show_error": True}
-    if hosted:
-        app.launch(server_name="0.0.0.0", server_port=int(os.getenv("PORT", "7860")), **page)
-    else:
-        # Port 7860 is already used by Stable Diffusion on this PC.
-        app.launch(server_name="0.0.0.0", server_port=7870, share="--share" in sys.argv, **page)
+    host = os.getenv("HOST", "0.0.0.0")
+    # Port 7860 is already used by Stable Diffusion on Hamster.
+    port = int(os.getenv("PORT", "7860" if hosted else "7870"))
+    page = {"head": REAR_CAMERA_JS, "css": CSS, "show_error": True}
+    if not host.startswith("100."):  # anything but Tailscale-only needs the password
+        password = os.getenv("APP_PASSWORD")
+        if not password:
+            if hosted:
+                sys.exit("APP_PASSWORD is missing; refusing to run without a password.")
+            password = secrets.token_urlsafe(9)
+            set_key(str(ROOT / ".env"), "APP_PASSWORD", password)
+            print("Made a phone password and saved it in .env (APP_PASSWORD).")
+        page["auth"] = ("jacob", password)
+    app.launch(server_name=host, server_port=port, share="--share" in sys.argv, **page)
 
 
 if __name__ == "__main__":
