@@ -48,13 +48,32 @@ def correct(upload):
     return str(ROOT / "out" / f"{photo.stem}-corrected.png"), "\n".join(changes)
 
 
+# Phones open the back camera straight away when a file picker asks for capture="environment".
+# Gradio has no option for that, so this sets it on the Scan button's hidden file input
+# (Gradio places that input right after the button).
+REAR_CAMERA_JS = """
+<script>
+new MutationObserver(() => {
+  document.querySelectorAll('#scan-btn + input[type=file]').forEach(i => {
+    if (!i.hasAttribute('capture')) { i.setAttribute('capture', 'environment'); i.accept = 'image/*'; }
+  });
+}).observe(document.documentElement, {childList: true, subtree: true});
+</script>
+"""
+CSS = """
+#scan-btn { min-height: 72px; font-size: 22px; }
+"""
+
 with gr.Blocks(title="Paper Editor") as app:
-    gr.Markdown("## Paper editor\nTake a photo of the work. Wrong answers come back fixed.")
-    photo = gr.Image(type="filepath", sources=["upload", "webcam"], label="Photo of the work")
-    go = gr.Button("Fix it", variant="primary")
+    gr.Markdown("## Paper editor\nScan the work. Wrong answers come back fixed.")
+    scan = gr.UploadButton("📷 Scan", file_types=["image"], type="filepath",
+                           variant="primary", elem_id="scan-btn")
+    pick = gr.UploadButton("Choose from photos", file_types=["image"], type="filepath",
+                           variant="secondary", elem_id="pick-btn")
     result = gr.Image(label="Corrected (tap and hold to save)", format="png")
-    log = gr.Textbox(label="What changed", lines=6)
-    go.click(correct, inputs=photo, outputs=[result, log])
+    log = gr.Textbox(label="What changed", lines=4)
+    scan.upload(correct, inputs=scan, outputs=[result, log])
+    pick.upload(correct, inputs=pick, outputs=[result, log])
 
 
 def main():
@@ -67,13 +86,12 @@ def main():
         password = secrets.token_urlsafe(9)
         set_key(str(ROOT / ".env"), "APP_PASSWORD", password)
         print("Made a phone password and saved it in .env (APP_PASSWORD).")
+    page = {"auth": ("jacob", password), "head": REAR_CAMERA_JS, "css": CSS, "show_error": True}
     if hosted:
-        app.launch(server_name="0.0.0.0", server_port=int(os.getenv("PORT", "7860")),
-                   auth=("jacob", password))
+        app.launch(server_name="0.0.0.0", server_port=int(os.getenv("PORT", "7860")), **page)
     else:
         # Port 7860 is already used by Stable Diffusion on this PC.
-        app.launch(server_name="0.0.0.0", server_port=7870, auth=("jacob", password),
-                   share="--share" in sys.argv)
+        app.launch(server_name="0.0.0.0", server_port=7870, share="--share" in sys.argv, **page)
 
 
 if __name__ == "__main__":
