@@ -51,11 +51,11 @@ def correct(upload):
 
 # Phones open the back camera straight away when a file picker asks for capture="environment".
 # Gradio has no option for that, so this sets it on the Scan button's hidden file input
-# (Gradio places that input right after the button).
+# (Gradio places that input right before the button).
 REAR_CAMERA_JS = """
 <script>
 new MutationObserver(() => {
-  document.querySelectorAll('#scan-btn + input[type=file]').forEach(i => {
+  document.querySelectorAll('input[type=file]:has(+ #scan-btn)').forEach(i => {
     if (!i.hasAttribute('capture')) { i.setAttribute('capture', 'environment'); i.accept = 'image/*'; }
   });
 }).observe(document.documentElement, {childList: true, subtree: true});
@@ -65,13 +65,13 @@ CSS = """
 #scan-btn { min-height: 72px; font-size: 22px; }
 """
 
-with gr.Blocks(title="Paper Editor") as app:
-    gr.Markdown("## Paper editor\nScan the work. Wrong answers come back fixed.")
+with gr.Blocks(title="Scanner") as app:
+    gr.Markdown("## Scanner")
     scan = gr.UploadButton("📷 Scan", file_types=["image"], type="filepath",
                            variant="primary", elem_id="scan-btn")
     pick = gr.UploadButton("Choose from photos", file_types=["image"], type="filepath",
                            variant="secondary", elem_id="pick-btn")
-    result = gr.Image(label="Corrected (tap and hold to save)", format="png")
+    result = gr.Image(label="Scanned (tap and hold to save)", format="png")
     log = gr.Textbox(label="What changed", lines=4)
     scan.upload(correct, inputs=scan, outputs=[result, log])
     pick.upload(correct, inputs=pick, outputs=[result, log])
