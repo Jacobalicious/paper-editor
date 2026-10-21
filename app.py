@@ -25,7 +25,8 @@ MAX_SIDE = 2000  # phone photos are huge; this is plenty for handwriting
 
 
 def run(step, photo):
-    r = subprocess.run([PY, step, str(photo)], cwd=ROOT, capture_output=True, text=True)
+    r = subprocess.run([PY, step, str(photo)], cwd=ROOT, capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")
     if r.returncode != 0:
         raise gr.Error(f"{step} failed: {(r.stderr or r.stdout).strip().splitlines()[-1]}")
     return r.stdout
@@ -45,7 +46,7 @@ def correct(upload):
         return str(photo), report.strip() + "\n\nNothing to change."
     run("erase.py", photo)
     run("write.py", photo)
-    changes = [l for l in report.splitlines() if l.startswith(("WRONG", "OK"))]
+    changes = [l for l in report.splitlines() if l.startswith(("WRONG", "OK", "WORK"))]
     return str(ROOT / "out" / f"{photo.stem}-corrected.png"), "\n".join(changes)
 
 

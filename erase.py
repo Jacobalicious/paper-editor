@@ -15,7 +15,9 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-PAD = 0.35      # grow Claude's box by this fraction on each side before searching
+PAD = 0.35      # how far past the ends of the box to look for ink, as a
+                # fraction of the line's height
+PAD_Y = 0.12    # and how far above and below it
 INK_DELTA = 28  # how much darker than the paper a pixel must be to count as ink
 EDGE_DELTA = 10  # fainter pixels touching real ink (stroke edges, light starts) also count
 
@@ -38,10 +40,10 @@ def add_faint_edges(strokes, diff):
 
 
 def find_answer_ink(mask, box):
-    """Keep only ink blobs that mostly sit inside Claude's box."""
+    """Keep only ink blobs that mostly sit inside Claude's box, on one line."""
     x0, y0, x1, y1 = box
     n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
-    keep = np.zeros_like(mask)
+    blobs = []
     for i in range(1, n):
         x, y, w, h, area = stats[i]
         if area < 4:
@@ -50,8 +52,35 @@ def find_answer_ink(mask, box):
         ix1, iy1 = min(x + w, x1), min(y + h, y1)
         overlap = max(0, ix1 - ix0) * max(0, iy1 - iy0)
         if overlap >= 0.5 * w * h:
-            keep[labels == i] = 255
+            blobs.append((i, y, h))
+
+    keep = np.zeros_like(mask)
+    for i in one_line(blobs):
+        keep[labels == i] = 255
     return keep
+
+
+def one_line(blobs):
+    """Drop blobs that belong to the line above or below.
+
+    The box Claude gives is a guess, and the search area around it is wider still,
+    so ink from a neighbouring row can sneak in. Everything later is scaled to the
+    height of what we find here, so one stray blob from the next line would make
+    the replacement writing much too big. Keep what sits on the same row as the
+    typical blob: its middle close to theirs.
+
+    Lines of working can be packed so tightly that a character is nearly as tall
+    as the gap between rows, so "close" has to mean a good deal less than a whole
+    character height.
+    """
+    if len(blobs) < 3:
+        return [i for i, _, _ in blobs]
+    mids = np.array([y + h / 2 for _, y, h in blobs])
+    heights = np.array([h for _, _, h in blobs], float)
+    tall = heights >= np.median(heights)      # full-size characters, not dots
+    row = np.median(mids[tall])
+    span = max(np.median(heights[tall]), 1.0)
+    return [b[0] for b, m in zip(blobs, mids) if abs(m - row) <= 0.55 * span]
 
 
 def erase(img, strokes):
@@ -84,6 +113,8 @@ def compare_strip(before, after, box, scale=4):
 
 
 def main():
+    # Answers can contain characters the Windows console cannot show.
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     if len(sys.argv) != 2:
         sys.exit("Usage: python erase.py <photo>")
     src = Path(sys.argv[1])
@@ -102,15 +133,27 @@ def main():
         b = p["answer_box"]
         x0, y0, x1, y1 = (int(b["x0"] * W / 1000), int(b["y0"] * H / 1000),
                           int(b["x1"] * W / 1000), int(b["y1"] * H / 1000))
-        px, py = int((x1 - x0) * PAD), int((y1 - y0) * PAD)
+        # The box could be out by about a character either way, so search that much
+        # further - in both directions, never by a share of a long line's width.
+        # Look wider than the box sideways, where the ink can run past its ends,
+        # but barely at all up and down: the line above is only millimetres away
+        # and must not be dragged in.
+        h = max(y1 - y0, 8)
+        px, py = int(h * PAD), int(h * PAD_Y)
         search = (max(0, x0 - px), max(0, y0 - py), min(W, x1 + px), min(H, y1 + py))
         strokes = find_answer_ink(mask, search)
         ys, xs = np.nonzero(strokes)
         if len(xs) == 0:
             print(f"Couldn't find ink for '{p['written_answer']}', skipping.")
             continue
-        p["ink_bgr"] = [int(v) for v in np.median(img[strokes > 0], axis=0)]
         ink_box = [int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1]
+        # If what we found is nothing like the size of what was asked for, the box
+        # is probably pointing at the wrong thing. Rubbing out the wrong thing is
+        # worse than leaving it, so leave it.
+        if not 0.4 <= (ink_box[3] - ink_box[1]) / max(y1 - y0, 1) <= 2.0:
+            print(f"Ink for '{p['written_answer']}' doesn't match its box, skipping.")
+            continue
+        p["ink_bgr"] = [int(v) for v in np.median(img[strokes > 0], axis=0)]
         p["ink_box"] = ink_box
         p["ink_height"] = ink_box[3] - ink_box[1]
         p["baseline_y"] = ink_box[3]

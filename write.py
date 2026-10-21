@@ -26,6 +26,7 @@ from erase import ink_mask, paper_background
 from grade import MODEL
 
 SS = 4  # supersampling factor for drawing; anti-aliases like a camera would
+MIN_SHRINK = 0.55  # a cramped answer gets written smaller, but only down to this
 
 # Rendering knobs. 1.0 = what was measured from the writer's own strokes.
 DEFAULT_STYLE = {"width": 1.0, "dark": 1.0, "wobble": 1.0, "grain": 1.0, "blur": 1.0}
@@ -40,8 +41,12 @@ strokes are lifted or joined, small wobbles. Then write "{new}" the way THEY wou
 as pen strokes.
 
 Coordinates: y=0 is the top of the replacement and y=100 is its bottom (the same height
-as "{old}"; the box shows that height). x starts at 0 on the left, in the same units
-(so a character as wide as it is tall spans x 0-100).
+as "{old}"; the box shows that height). Keep the writing inside that height - it must
+sit on the same line as everything around it, not tower over it. x starts at 0 on the
+left, in the same units (so a character as wide as it is tall spans x 0-100).
+There are only {room} units of blank paper before the next thing on this line, so the
+whole of "{new}" has to fit in that width. If it is longer than "{old}", pack the
+characters closer together, the way this person would when running out of room.
 Each stroke is one continuous pen movement, in drawing order, as points along the pen's
 path. Use enough points to capture curves smoothly (roughly every 3-5 units). Keep the
 natural irregularity of real handwriting; do not make it geometrically perfect."""
@@ -149,7 +154,7 @@ def line_image(img, box):
     return base64.standard_b64encode(buf.tobytes()).decode("utf-8")
 
 
-def ask_strokes(img, box, old, new):
+def ask_strokes(img, box, old, new, room):
     client = anthropic.Anthropic()
     response = client.beta.messages.create(
         model=MODEL,
@@ -160,7 +165,7 @@ def ask_strokes(img, box, old, new):
         messages=[{"role": "user", "content": [
             {"type": "image", "source": {"type": "base64", "media_type": "image/png",
                                          "data": line_image(img, box)}},
-            {"type": "text", "text": PROMPT.format(old=old, new=new) + favorites_hint()},
+            {"type": "text", "text": PROMPT.format(old=old, new=new, room=room) + favorites_hint()},
         ]}],
     )
     if response.stop_reason == "refusal":
@@ -196,10 +201,13 @@ def render(strokes, unit_px, pen_px, rng, style=DEFAULT_STYLE):
     allp = np.vstack(strokes)
     margin = pen_px * 3
     minx = min(0, allp[:, 0].min())
+    miny = min(0, allp[:, 1].min())            # room for anything above the line
+    maxy = max(100, allp[:, 1].max())          # ...and for descenders below it
     w = int((allp[:, 0].max() - minx) * unit_px + 2 * margin) + 1
-    h = int(100 * unit_px + 2 * margin) + 1
+    h = int((maxy - miny) * unit_px + 2 * margin) + 1
     canvas = np.zeros((h * SS, w * SS), np.float32)
     ox = margin - minx * unit_px
+    margin = margin - miny * unit_px           # where y=0 ends up on the canvas
     for s in strokes:
         px = catmull_rom(s * unit_px, 0.25)
         seg = np.r_[0, np.cumsum(np.linalg.norm(np.diff(px, axis=0), axis=1))]
@@ -245,8 +253,13 @@ def blend(page, cov, top_left, core, paper, blur_sigma):
     """Multiply-blend ink onto the page: paper texture keeps showing through."""
     cov = cv2.GaussianBlur(cov, (0, 0), blur_sigma)
     x, y = top_left
+    # Keep it on the page: trim anything that would fall off an edge.
+    cov = cov[max(0, -y):, max(0, -x):]
+    x, y = max(0, x), max(0, y)
     h, w = cov.shape
     region = page[y:y + h, x:x + w].astype(np.float32)
+    if region.size == 0:
+        return
     cov = cov[:region.shape[0], :region.shape[1], None]
     ratio = np.clip(core / np.maximum(paper, 1), 0, 1)
     region = region * (1 - cov + cov * ratio)
@@ -319,10 +332,30 @@ def get_strokes(ctx, p, redraw):
         p["strokes"] = [s.tolist() for s in strokes]
         print(f"Writing '{p['correct_answer']}' from your favorite drawing")
         return strokes
-    strokes, notes = ask_strokes(ctx["original"], p["ink_box"], p["written_answer"], p["correct_answer"])
+    box = p["ink_box"]
+    room = int(room_to_write(ctx, box) / max(box[3] - box[1], 1) * 100)
+    strokes, notes = ask_strokes(ctx["original"], box, p["written_answer"],
+                                 p["correct_answer"], room)
     p["strokes"] = [s.tolist() for s in strokes]
     print(f"Writing '{p['correct_answer']}' - style: {notes}")
     return strokes
+
+
+def room_to_write(ctx, box):
+    """Blank paper to the right of the old answer, in pixels.
+
+    Scans along the old answer's own line for the next ink; if there is none,
+    the writing can run to the edge of the photo (less a small margin).
+    """
+    x0, y0, x1, y1 = box
+    h = max(y1 - y0, 1)
+    W = ctx["strong"].shape[1]
+    band = ctx["strong"][max(0, y0 - h // 3):y1 + h // 3, :] > 0
+    cols = band.sum(axis=0)
+    gap = max(2, h // 8)                       # ignore the old answer's own smear
+    ahead = np.nonzero(cols[x1 + gap:] >= 2)[0]
+    right = (x1 + gap + int(ahead[0])) if len(ahead) else W - h // 4
+    return max(right - max(2, h // 6) - x0, h)  # never squeeze below one character
 
 
 def write_answer(ctx, page, p, strokes, rng, style=DEFAULT_STYLE):
@@ -341,12 +374,26 @@ def write_answer(ctx, page, p, strokes, rng, style=DEFAULT_STYLE):
     # Start the new answer where the old ink started, so spacing after "=" is kept.
     left = min(st[:, 0].min() for st in strokes)
     strokes = [st - [left, 0] for st in strokes]
-    cov, ox, oy = render(strokes, (y1 - y0) / 100, pen_px * style["width"], rng, style)
-    blend(page, cov, (x0 - ox, y0 - oy), ink, paper, ctx["blur_sigma"] * style["blur"])
+
+    # Size: one unit of the drawing is 1/100th of the old answer's height. If the
+    # new answer is longer and would run into whatever is written next, write it
+    # smaller - the same thing a person does when they are short of room.
+    unit = (y1 - y0) / 100
+    wide = max(st[:, 0].max() for st in strokes)
+    room = room_to_write(ctx, box)
+    if wide * unit > room:
+        unit = max(room / wide, unit * MIN_SHRINK)
+    pen = pen_px * style["width"] * min(1.0, (unit / ((y1 - y0) / 100)) ** 0.5)
+
+    cov, ox, oy = render(strokes, unit, pen, rng, style)
+    top = y1 - int(round(100 * unit))          # sits on the old answer's baseline
+    blend(page, cov, (x0 - ox, top - oy), ink, paper, ctx["blur_sigma"] * style["blur"])
     return pen_px, gain
 
 
 def main():
+    # Answers can contain characters the Windows console cannot show.
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     args = [a for a in sys.argv[1:] if a != "--redraw"]
     redraw = "--redraw" in sys.argv
     if len(args) != 1:
