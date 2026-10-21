@@ -41,12 +41,13 @@ def correct(upload):
     img.thumbnail((MAX_SIDE, MAX_SIDE))
     img.save(photo)
 
+    run("page.py", photo)          # crop to the sheet of paper and straighten it
     report = run("grade.py", photo)
     if "0 answer(s) to fix" in report:
         return str(photo), report.strip() + "\n\nNothing to change."
     run("erase.py", photo)
     run("write.py", photo)
-    changes = [l for l in report.splitlines() if l.startswith(("WRONG", "OK", "WORK"))]
+    changes = [l for l in report.splitlines() if l.startswith(("WRONG", "OK", "WORK", "SKIP"))]
     return str(ROOT / "out" / f"{photo.stem}-corrected.png"), "\n".join(changes)
 
 

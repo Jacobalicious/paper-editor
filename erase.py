@@ -40,7 +40,12 @@ def add_faint_edges(strokes, diff):
 
 
 def find_answer_ink(mask, box):
-    """Keep only ink blobs that mostly sit inside Claude's box, on one line."""
+    """Keep only ink blobs that mostly sit inside Claude's box, on one line.
+
+    Returns two masks: everything to rub out, and just the full-size characters
+    of the line. The second is what the new writing is sized against, so that a
+    subscript hanging below does not make the replacement taller.
+    """
     x0, y0, x1, y1 = box
     n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
     blobs = []
@@ -54,10 +59,14 @@ def find_answer_ink(mask, box):
         if overlap >= 0.5 * w * h:
             blobs.append((i, y, h))
 
-    keep = np.zeros_like(mask)
-    for i in one_line(blobs):
+    keep, core = np.zeros_like(mask), np.zeros_like(mask)
+    on_row, hanging = one_line(blobs)
+    for i in on_row:
         keep[labels == i] = 255
-    return keep
+        core[labels == i] = 255
+    for i in hanging:
+        keep[labels == i] = 255
+    return keep, core
 
 
 def one_line(blobs):
@@ -71,16 +80,25 @@ def one_line(blobs):
 
     Lines of working can be packed so tightly that a character is nearly as tall
     as the gap between rows, so "close" has to mean a good deal less than a whole
-    character height.
+    character height. Small characters get a little more room, so that a subscript
+    hanging below the line stays with the line it belongs to.
     """
     if len(blobs) < 3:
-        return [i for i, _, _ in blobs]
+        return [i for i, _, _ in blobs], []
     mids = np.array([y + h / 2 for _, y, h in blobs])
     heights = np.array([h for _, _, h in blobs], float)
     tall = heights >= np.median(heights)      # full-size characters, not dots
     row = np.median(mids[tall])
     span = max(np.median(heights[tall]), 1.0)
-    return [b[0] for b, m in zip(blobs, mids) if abs(m - row) <= 0.55 * span]
+    line, hanging = [], []
+    for (i, y, h), m in zip(blobs, mids):
+        if abs(m - row) <= 0.55 * span:
+            line.append(i)
+        # A subscript is small, starts within the line and hangs below it. The
+        # line below is small too, but it starts well clear of this one.
+        elif h < 0.7 * span and y < row + 0.6 * span and m - row <= span:
+            hanging.append(i)
+    return line, hanging
 
 
 def erase(img, strokes):
@@ -141,17 +159,17 @@ def main():
         h = max(y1 - y0, 8)
         px, py = int(h * PAD), int(h * PAD_Y)
         search = (max(0, x0 - px), max(0, y0 - py), min(W, x1 + px), min(H, y1 + py))
-        strokes = find_answer_ink(mask, search)
-        ys, xs = np.nonzero(strokes)
+        strokes, core = find_answer_ink(mask, search)
+        ys, xs = np.nonzero(core if core.any() else strokes)
         if len(xs) == 0:
-            print(f"Couldn't find ink for '{p['written_answer']}', skipping.")
+            print(f"SKIP   couldn't find '{p['written_answer']}' on the page - left as it was")
             continue
         ink_box = [int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1]
         # If what we found is nothing like the size of what was asked for, the box
         # is probably pointing at the wrong thing. Rubbing out the wrong thing is
         # worse than leaving it, so leave it.
         if not 0.4 <= (ink_box[3] - ink_box[1]) / max(y1 - y0, 1) <= 2.0:
-            print(f"Ink for '{p['written_answer']}' doesn't match its box, skipping.")
+            print(f"SKIP   couldn't pin down '{p['written_answer']}' - left as it was")
             continue
         p["ink_bgr"] = [int(v) for v in np.median(img[strokes > 0], axis=0)]
         p["ink_box"] = ink_box
